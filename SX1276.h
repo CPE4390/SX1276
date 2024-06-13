@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-void SX1276_Init(uint32_t frequency);
+void SX1276_Init(uint8_t channel);
 char SX1276_SendPacket(uint8_t *data, int len);
 int SX1276_ReceivePacket(uint8_t *data, int maxLen);
 
