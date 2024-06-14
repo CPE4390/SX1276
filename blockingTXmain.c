@@ -14,9 +14,6 @@
 //VCC -> 3.3V
 //GND -> GND
 
-uint8_t readRegister(uint8_t regAddress);
-void writeRegister(uint8_t regAddress, uint8_t value);
-
 void main(void) {
     OSCTUNEbits.PLLEN = 1;
     LCDInit();

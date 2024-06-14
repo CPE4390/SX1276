@@ -86,8 +86,8 @@ static void (*onTxDone)(void);
 
 static void initSPI(void);
 static uint8_t spiTransfer(uint8_t byte);
-uint8_t readRegister(uint8_t regAddress); //TODO make static after testing
-void writeRegister(uint8_t regAddress, uint8_t value);
+static uint8_t readRegister(uint8_t regAddress);
+static void writeRegister(uint8_t regAddress, uint8_t value);
 static void readFIFO(uint8_t *buffer, uint8_t len);
 static void writeFIFO(uint8_t *buffer, uint8_t len);
 static void setOpMode(uint8_t mode);
