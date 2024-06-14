@@ -2,6 +2,9 @@
 #include <xc.h>
 #include "SX1276.h"
 
+//Disable warning about functions used in ISR
+#pragma warning disable 1510
+
 //pins
 #define NSS     (LATDbits.LATD7)
 #define REST    (LATDbits.LATD3)
@@ -73,17 +76,22 @@
 #define TX_FIFO_BASE    0x00
 #define RX_FIFO_BASE    0x80
 
-static enum _headerMode {
-    IMPLICIT_HEADER = 1, EXPLICIT_HEADER = 0
-} headerMode;
-
 enum {
     DIO0_TXDONE = 0x40, DIO0_RXDONE = 0x00, DIO0_CADDONE = 0x80
 };
 
+//private variables
 static uint32_t nominalFrequency;
+static bool crcEnabled;
 static void (*onTxDone)(void);
+static void (*onRxDone)(void);
+static void (*onCadDone)(bool);
 
+static enum _headerMode {
+    IMPLICIT_HEADER = 1, EXPLICIT_HEADER = 0
+} headerMode;
+
+//private helper functions
 static void initSPI(void);
 static uint8_t spiTransfer(uint8_t byte);
 static uint8_t readRegister(uint8_t regAddress);
@@ -95,7 +103,6 @@ static void setHeaderMode(enum _headerMode mode);
 static bool setLDO(void);
 static uint8_t getSpreadingFactor(void);
 static uint32_t getBandwidthHz(void);
-static void useCRC(bool crc); //TODO should this be public?
 
 bool SX1276_Init(void) {
     initSPI();
@@ -111,7 +118,12 @@ bool SX1276_Init(void) {
     }
     writeRegister(REG_FIFO_TX_BASE_ADDR, TX_FIFO_BASE);
     writeRegister(REG_FIFO_RX_BASE_ADDR, RX_FIFO_BASE);
-    onTxDone = NULL; 
+    SX1276_SetFrequency(915000000);
+    headerMode = EXPLICIT_HEADER;
+    crcEnabled = false;
+    onTxDone = NULL;
+    onRxDone = NULL;
+    onCadDone = NULL;
     return true;
 }
 
@@ -210,19 +222,28 @@ void SX1276_SetSignalBandwidth(enum SX1276_BANDWIDTH bw) {
     writeRegister(0x30, 0x00);
 }
 
-void SX1276_SetTransmitPower(uint8_t db) {
-    if (db <= 14) {
-        SX1276_SetOCP(100);
-        writeRegister(REG_PA_DAC, 0x84);
-        writeRegister(REG_PA_CONFIG, 0x70 | db);
-    } else if (db <= 17) {
-        SX1276_SetOCP(100); //TODO check the ocp settings
-        writeRegister(REG_PA_DAC, 0x84);
-        writeRegister(REG_PA_CONFIG, PA_BOOST | (db - 2));
-    } else { //db > 17 set power at 20db
-        SX1276_SetOCP(140); //TODO check ocp setting
-        writeRegister(REG_PA_DAC, 0x87);
-        writeRegister(REG_PA_CONFIG, 15);
+void SX1276_SetTransmitPower(uint8_t db, enum SX1276_PA_PIN pin) {
+    if (pin == PA_RFO_OUTPUT) {
+        if (db <= 14) {
+            SX1276_SetOCP(100);
+            writeRegister(REG_PA_DAC, 0x84);
+            writeRegister(REG_PA_CONFIG, 0x70 | db);
+        } else {
+            return;
+        }
+    } else if (pin == PA_PABOOST_OUTPUT) {
+        if (db < 2) {
+            db = 2;
+        }
+        if (db <= 17) {
+            SX1276_SetOCP(100); //TODO check the ocp settings
+            writeRegister(REG_PA_DAC, 0x84);
+            writeRegister(REG_PA_CONFIG, PA_BOOST | (db - 2));
+        } else { //db > 17 set power at 20db
+            SX1276_SetOCP(140); //TODO check ocp setting
+            writeRegister(REG_PA_DAC, 0x87);
+            writeRegister(REG_PA_CONFIG, PA_BOOST | 15);
+        }
     }
 }
 
@@ -262,6 +283,21 @@ void SX1276_SetLNAGain(uint8_t gain, bool boost) {
     writeRegister(REG_LNA, gain);
 }
 
+void SX1276_SetPreambleLength(uint8_t len) {
+    //TODO code this
+}
+
+void SX1276_EnableCRC(bool enable) {
+    //TODO test this
+    uint8_t reg = readRegister(REG_MODEM_CONFIG_2);
+    if (enable) {
+        reg |= 0x04;
+    } else {
+        reg &= ~0x04;
+    }
+    writeRegister(REG_MODEM_CONFIG_2, reg);
+}
+
 void SX1276_Standby(void) {
     setOpMode(MODE_STDBY);
 }
@@ -285,7 +321,7 @@ bool SX1276_SendPacket(uint8_t *data, uint8_t len, bool block) {
     setOpMode(MODE_TX);
     if (block) {
         while (!(readRegister(REG_IRQ_FLAGS) & IRQ_TX_DONE_MASK));
-        writeRegister(REG_IRQ_FLAGS, IRQ_TX_DONE_MASK);  //Clear the IRQ
+        writeRegister(REG_IRQ_FLAGS, IRQ_TX_DONE_MASK); //Clear the IRQ
     }
     return true;
 }
@@ -304,17 +340,17 @@ bool SX1276_TXBusy(void) {
 
 void SX1276_HandleDIO0Int(void) {
     if (readRegister(REG_IRQ_FLAGS) & IRQ_TX_DONE_MASK) {
-        writeRegister(REG_IRQ_FLAGS, IRQ_TX_DONE_MASK);  //Clear the IRQ
+        writeRegister(REG_IRQ_FLAGS, IRQ_TX_DONE_MASK); //Clear the IRQ
         if (onTxDone) {
             onTxDone();
         }
     }
     if (readRegister(REG_IRQ_FLAGS) & IRQ_RX_DONE_MASK) {
-        writeRegister(REG_IRQ_FLAGS, IRQ_RX_DONE_MASK);  //Clear the IRQ
+        writeRegister(REG_IRQ_FLAGS, IRQ_RX_DONE_MASK); //Clear the IRQ
         //TODO handle rx
     }
     if (readRegister(REG_IRQ_FLAGS) & IRQ_CAD_DONE_MASK) {
-        writeRegister(REG_IRQ_FLAGS, IRQ_CAD_DONE_MASK);  //Clear the IRQ
+        writeRegister(REG_IRQ_FLAGS, IRQ_CAD_DONE_MASK); //Clear the IRQ
         //TODO handle CAD
     }
 }
@@ -433,15 +469,4 @@ uint32_t getBandwidthHz(void) {
         case BW500K:
         default: return 500000;
     }
-}
-
-void useCRC(bool crc) {
-    //TODO test this
-    uint8_t reg = readRegister(REG_MODEM_CONFIG_2);
-    if (crc) {
-        reg |= 0x04;
-    } else {
-        reg &= ~0x04;
-    }
-    writeRegister(REG_MODEM_CONFIG_2, reg);
 }

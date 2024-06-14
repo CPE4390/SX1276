@@ -33,9 +33,9 @@ void main(void) {
     INTCONbits.GIE = 1;
     SX1276_SetFrequency(915000000);
     SX1276_SetSignalBandwidth(BW125K);
-    SX1276_SetSpreadingFactor(10);
+    SX1276_SetSpreadingFactor(12);
     SX1276_SetCodingRate(5);
-    SX1276_SetTransmitPower(15);
+    SX1276_SetTransmitPower(14, PA_PABOOST_OUTPUT);  //must use PABOOST for these boards
     SX1276_SetTXDoneCallback(&onTxDone);
     lprintf(1, "Init done");
     while (1) {

@@ -27,7 +27,7 @@ void main(void) {
     SX1276_SetSignalBandwidth(BW125K);
     SX1276_SetSpreadingFactor(7);
     SX1276_SetCodingRate(5);
-    SX1276_SetTransmitPower(15);  //These boards only work with a power 15dbm or above
+    SX1276_SetTransmitPower(14, PA_PABOOST_OUTPUT); //must use PABOOST for these boards
     lprintf(1, "Init done");
     int txCount = 0;
     while (1) {
