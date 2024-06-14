@@ -70,15 +70,23 @@
 
 #define _XTAL_FREQ  32000000
 
+#define TX_FIFO_BASE    0x00
+#define RX_FIFO_BASE    0x80
+
 static enum _headerMode {
     IMPLICIT_HEADER = 1, EXPLICIT_HEADER = 0
 } headerMode;
 
+enum {
+    DIO0_TXDONE = 0x40, DIO0_RXDONE = 0x00, DIO0_CADDONE = 0x80
+};
+
 static uint32_t nominalFrequency;
+static void (*onTxDone)(void);
 
 static void initSPI(void);
 static uint8_t spiTransfer(uint8_t byte);
-uint8_t readRegister(uint8_t regAddress);  //TODO make static after testing
+uint8_t readRegister(uint8_t regAddress); //TODO make static after testing
 void writeRegister(uint8_t regAddress, uint8_t value);
 static void readFIFO(uint8_t *buffer, uint8_t len);
 static void writeFIFO(uint8_t *buffer, uint8_t len);
@@ -101,8 +109,9 @@ bool SX1276_Init(void) {
     if (readRegister(REG_VERSION) != 0x12) {
         return false;
     }
-    writeRegister(REG_FIFO_TX_BASE_ADDR, 0);
-    writeRegister(REG_FIFO_RX_BASE_ADDR, 128);
+    writeRegister(REG_FIFO_TX_BASE_ADDR, TX_FIFO_BASE);
+    writeRegister(REG_FIFO_RX_BASE_ADDR, RX_FIFO_BASE);
+    onTxDone = NULL; 
     return true;
 }
 
@@ -120,7 +129,7 @@ void SX1276_SetFrequency(uint32_t frequency) {
     writeRegister(REG_FRF_MID, (uint8_t) (frf >> 8));
     writeRegister(REG_FRF_LSB, (uint8_t) frf);
 }
- 
+
 void SX1276_SetChannel(uint8_t channel) {
     if (channel > 63) {
         return;
@@ -201,13 +210,19 @@ void SX1276_SetSignalBandwidth(enum SX1276_BANDWIDTH bw) {
     writeRegister(0x30, 0x00);
 }
 
-void SX1276_SetTransmitPower(uint8_t db, bool paBoost) {
+void SX1276_SetTransmitPower(uint8_t db) {
     if (db <= 14) {
+        SX1276_SetOCP(100);
+        writeRegister(REG_PA_DAC, 0x84);
         writeRegister(REG_PA_CONFIG, 0x70 | db);
-        SX1276_SetOCP(100);  //TODO check expected value
-    } else {
-        //SX1276_SetOCP(140); //TODO check this
-        return; //TODO implement power above 14db with PABOOST on
+    } else if (db <= 17) {
+        SX1276_SetOCP(100); //TODO check the ocp settings
+        writeRegister(REG_PA_DAC, 0x84);
+        writeRegister(REG_PA_CONFIG, PA_BOOST | (db - 2));
+    } else { //db > 17 set power at 20db
+        SX1276_SetOCP(140); //TODO check ocp setting
+        writeRegister(REG_PA_DAC, 0x87);
+        writeRegister(REG_PA_CONFIG, 15);
     }
 }
 
@@ -255,7 +270,23 @@ void SX1276_Sleep(void) {
     setOpMode(MODE_SLEEP);
 }
 
-char SX1276_SendPacket(uint8_t *data, int len) {
+bool SX1276_SendPacket(uint8_t *data, uint8_t len, bool block) {
+    if (len > MAX_PACKET_LENGTH) {
+        return false;
+    }
+    if (SX1276_TXBusy()) {
+        return false;
+    }
+    SX1276_Standby();
+    if (!block) {
+        writeRegister(REG_DIO_MAPPING_1, DIO0_TXDONE);
+    }
+    writeFIFO(data, len);
+    setOpMode(MODE_TX);
+    if (block) {
+        while (!(readRegister(REG_IRQ_FLAGS) & IRQ_TX_DONE_MASK));
+        writeRegister(REG_IRQ_FLAGS, IRQ_TX_DONE_MASK);  //Clear the IRQ
+    }
     return true;
 }
 
@@ -263,12 +294,33 @@ int SX1276_ReceivePacket(uint8_t *data, int maxLen) {
     return true;
 }
 
-void SX1276_HandleRxInt(void) {
-
+bool SX1276_TXBusy(void) {
+    if ((readRegister(REG_OP_MODE) & MODE_TX) == MODE_TX) {
+        return true;
+    } else {
+        return false;
+    }
 }
 
-void SX1276_HandleTxInt(void) {
+void SX1276_HandleDIO0Int(void) {
+    if (readRegister(REG_IRQ_FLAGS) & IRQ_TX_DONE_MASK) {
+        writeRegister(REG_IRQ_FLAGS, IRQ_TX_DONE_MASK);  //Clear the IRQ
+        if (onTxDone) {
+            onTxDone();
+        }
+    }
+    if (readRegister(REG_IRQ_FLAGS) & IRQ_RX_DONE_MASK) {
+        writeRegister(REG_IRQ_FLAGS, IRQ_RX_DONE_MASK);  //Clear the IRQ
+        //TODO handle rx
+    }
+    if (readRegister(REG_IRQ_FLAGS) & IRQ_CAD_DONE_MASK) {
+        writeRegister(REG_IRQ_FLAGS, IRQ_CAD_DONE_MASK);  //Clear the IRQ
+        //TODO handle CAD
+    }
+}
 
+void SX1276_SetTXDoneCallback(void (*callback)(void)) {
+    onTxDone = callback;
 }
 
 void initSPI(void) {
@@ -320,6 +372,7 @@ void readFIFO(uint8_t *buffer, uint8_t len) {
 }
 
 void writeFIFO(uint8_t *buffer, uint8_t len) {
+    writeRegister(REG_FIFO_ADDR_PTR, TX_FIFO_BASE);
     NSS = 0;
     spiTransfer(REG_FIFO | 0b10000000);
     while (len > 0) {

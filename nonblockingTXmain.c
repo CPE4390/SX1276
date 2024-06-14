@@ -28,19 +28,24 @@ void main(void) {
     SX1276_SetSignalBandwidth(BW125K);
     SX1276_SetSpreadingFactor(7);
     SX1276_SetCodingRate(5);
-    SX1276_SetLNAGain(0, true);
-    SX1276_SetTransmitPower(14, false);
-    //SX1276_Standby();
+    SX1276_SetTransmitPower(17);
     lprintf(1, "Init done");
-    uint8_t rh = readRegister(0x0b);
-    uint8_t rm = readRegister(0x26);
-    uint8_t rl = readRegister(0x0c);
-    lprintf(1, "%02x %02x %02x", rh, rm, rl);
     while (1) {
-        
-        __delay_ms(200);
+        __delay_ms(1000);
+        char msg[17];
+        sprintf(msg, "Hello World #%d", txCount);
+        bool success = SX1276_SendPacket((uint8_t *)msg, (uint8_t)(strlen(msg) + 1), false);
+        if (success) {
+            ++txCount;
+            lprintf(0, "TX Count = %d ", txCount);
+        } else {
+            lprintf(0, "%d", success);
+        }
     }
 }
 
+void __interrupt(high_priority) HighISR(void) {
+    
+}
 
  

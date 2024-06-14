@@ -14,16 +14,16 @@ void SX1276_SetChannel(uint8_t channel);
 void SX1276_SetSpreadingFactor(uint8_t sf);
 void SX1276_SetCodingRate(uint8_t cr);
 void SX1276_SetSignalBandwidth(enum SX1276_BANDWIDTH bw);
-void SX1276_SetTransmitPower(uint8_t db, bool paBoost);
+void SX1276_SetTransmitPower(uint8_t db);
 void SX1276_SetOCP(uint8_t maxCurrent);
 void SX1276_SetLNAGain(uint8_t gain, bool boost);
 void SX1276_Standby(void);
 void SX1276_Sleep(void);
-char SX1276_SendPacket(uint8_t *data, int len);
+bool SX1276_SendPacket(uint8_t *data, uint8_t len, bool block);
 int SX1276_ReceivePacket(uint8_t *data, int maxLen);
-
-void SX1276_HandleRxInt(void);
-void SX1276_HandleTxInt(void);
+bool SX1276_TXBusy(void);
+void SX1276_HandleDIO0Int(void);
+void SX1276_SetTXDoneCallback(void (*callback)(void));
 
 #endif	/* SX1276_H */
 
