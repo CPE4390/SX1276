@@ -69,12 +69,12 @@
 #define RSSI_OFFSET_HF_PORT      157
 #define RSSI_OFFSET_LF_PORT      164
 
+//The packet length and fifo bases can be adjusted based on need
 #define MAX_PACKET_LENGTH           128
-
-#define _XTAL_FREQ  32000000
-
 #define TX_FIFO_BASE    0x00
 #define RX_FIFO_BASE    0x80
+
+#define _XTAL_FREQ  32000000
 
 enum {
     DIO0_TXDONE = 0x40, DIO0_RXDONE = 0x00, DIO0_CADDONE = 0x80
@@ -83,13 +83,10 @@ enum {
 //private variables
 static uint32_t nominalFrequency;
 static bool crcEnabled;
+static enum _headerMode headerMode;
 static void (*onTxDone)(void);
 static void (*onRxDone)(void);
 static void (*onCadDone)(bool);
-
-static enum _headerMode {
-    IMPLICIT_HEADER = 1, EXPLICIT_HEADER = 0
-} headerMode;
 
 //private helper functions
 static void initSPI(void);
@@ -99,7 +96,6 @@ static void writeRegister(uint8_t regAddress, uint8_t value);
 static void readFIFO(uint8_t *buffer, uint8_t len);
 static void writeFIFO(uint8_t *buffer, uint8_t len);
 static void setOpMode(uint8_t mode);
-static void setHeaderMode(enum _headerMode mode);
 static bool setLDO(void);
 static uint8_t getSpreadingFactor(void);
 static uint32_t getBandwidthHz(void);
@@ -157,11 +153,11 @@ void SX1276_SetSpreadingFactor(uint8_t sf) {
     }
     uint32_t bw = getBandwidthHz();
     if (sf == 6) {
-        setHeaderMode(IMPLICIT_HEADER);
+        SX1276_SetHeaderMode(IMPLICIT_HEADER);
         writeRegister(REG_DETECTION_OPTIMIZE, bw == 500000 ? 0xc5 : 0x45);
         writeRegister(REG_DETECTION_THRESHOLD, 0x0c);
     } else {
-        setHeaderMode(EXPLICIT_HEADER);
+        //SX1276_SetHeaderMode(EXPLICIT_HEADER);
         writeRegister(REG_DETECTION_OPTIMIZE, bw == 500000 ? 0xc3 : 0x43);
         writeRegister(REG_DETECTION_THRESHOLD, 0x0a);
     }
@@ -283,8 +279,10 @@ void SX1276_SetLNAGain(uint8_t gain, bool boost) {
     writeRegister(REG_LNA, gain);
 }
 
-void SX1276_SetPreambleLength(uint8_t len) {
-    //TODO code this
+void SX1276_SetPreambleLength(uint16_t len) {
+    //Actual preamble length will be len + 4.25 symbols;
+    writeRegister(REG_PREAMBLE_MSB, (uint8_t)(len >> 8));
+    writeRegister(REG_PREAMBLE_LSB, (uint8_t)len);
 }
 
 void SX1276_EnableCRC(bool enable) {
@@ -296,6 +294,17 @@ void SX1276_EnableCRC(bool enable) {
         reg &= ~0x04;
     }
     writeRegister(REG_MODEM_CONFIG_2, reg);
+}
+
+void SX1276_SetHeaderMode(enum _headerMode mode) {
+    headerMode = mode;
+    uint8_t reg = readRegister(REG_MODEM_CONFIG_1);
+    if (mode == IMPLICIT_HEADER) {
+        reg |= 0x01;
+    } else {
+        reg &= ~0x01;
+    }
+    writeRegister(REG_MODEM_CONFIG_1, reg);
 }
 
 void SX1276_Standby(void) {
@@ -326,8 +335,31 @@ bool SX1276_SendPacket(uint8_t *data, uint8_t len, bool block) {
     return true;
 }
 
-int SX1276_ReceivePacket(uint8_t *data, int maxLen) {
+//In implicit header mode len = packet length
+//In explicit header mode len = data buffer length = maximum packet that can be sent to buffer 
+int SX1276_ReceivePacket(uint8_t *data, int len, bool block) {
     return true;
+}
+
+bool SX1276_ChannelActivityDetect(bool block) {
+    SX1276_Standby();
+    if (!block) {
+        writeRegister(REG_DIO_MAPPING_1, DIO0_CADDONE);
+    }
+    setOpMode(MODE_CAD);
+    if (block) {
+        while (!(readRegister(REG_IRQ_FLAGS) & IRQ_CAD_DONE_MASK));
+        writeRegister(REG_IRQ_FLAGS, IRQ_CAD_DONE_MASK); //Clear the IRQ
+        if (readRegister(REG_IRQ_FLAGS) & IRQ_CAD_DETECTED_MASK) {
+            writeRegister(REG_IRQ_FLAGS, IRQ_CAD_DETECTED_MASK); //Clear the IRQ
+            return true;
+        } else {
+            return false;
+        }
+    } else {
+        //non-blocking mode always returns true. The callback will get the result
+        return true;
+    }
 }
 
 bool SX1276_TXBusy(void) {
@@ -336,6 +368,18 @@ bool SX1276_TXBusy(void) {
     } else {
         return false;
     }
+}
+
+float SX1276_RSSI(void) {
+    
+}
+
+float SX1276_PacketRSSI(void) {
+    
+}
+
+float SX1276_PacketSNR(void) {
+    
 }
 
 void SX1276_HandleDIO0Int(void) {
@@ -348,15 +392,33 @@ void SX1276_HandleDIO0Int(void) {
     if (readRegister(REG_IRQ_FLAGS) & IRQ_RX_DONE_MASK) {
         writeRegister(REG_IRQ_FLAGS, IRQ_RX_DONE_MASK); //Clear the IRQ
         //TODO handle rx
+        if (onRxDone) {
+            onRxDone();
+        }
     }
     if (readRegister(REG_IRQ_FLAGS) & IRQ_CAD_DONE_MASK) {
         writeRegister(REG_IRQ_FLAGS, IRQ_CAD_DONE_MASK); //Clear the IRQ
-        //TODO handle CAD
+        bool result = false;
+        if (readRegister(REG_IRQ_FLAGS) & IRQ_CAD_DETECTED_MASK) {
+            writeRegister(REG_IRQ_FLAGS, IRQ_CAD_DETECTED_MASK); //Clear the IRQ
+            result = true;
+        }
+        if (onCadDone) {
+            onCadDone(result);
+        }
     }
 }
 
 void SX1276_SetTXDoneCallback(void (*callback)(void)) {
     onTxDone = callback;
+}
+
+void SX1276_SetRXDoneCallback(void (*callback)(void)) {
+    onRxDone = callback;
+}
+
+void SX1276_SetCadDoneCallback(void (*callback)(bool)) {
+    onCadDone = callback;
 }
 
 void initSPI(void) {
@@ -422,17 +484,6 @@ void writeFIFO(uint8_t *buffer, uint8_t len) {
 void setOpMode(uint8_t mode) {
     mode &= 0x07;
     writeRegister(REG_OP_MODE, MODE_LORA | mode);
-}
-
-void setHeaderMode(enum _headerMode mode) {
-    headerMode = mode;
-    uint8_t reg = readRegister(REG_MODEM_CONFIG_1);
-    if (mode == IMPLICIT_HEADER) {
-        reg |= 0x01;
-    } else {
-        reg &= ~0x01;
-    }
-    writeRegister(REG_MODEM_CONFIG_1, reg);
 }
 
 bool setLDO(void) {

@@ -14,9 +14,11 @@
 //VCC -> 3.3V
 //GND -> GND
 
-volatile int txCount = 0;
+volatile int cadCount = 0;
 
-void onTxDone(void);
+void onCadDone(bool result);
+
+//TODO have this switch to rx when channel activity detected
 
 void main(void) {
     OSCTUNEbits.PLLEN = 1;
@@ -35,15 +37,15 @@ void main(void) {
     SX1276_SetSignalBandwidth(BW125K);
     SX1276_SetSpreadingFactor(7);
     SX1276_SetCodingRate(5);
-    SX1276_SetTransmitPower(14, PA_PABOOST_OUTPUT);  //must use PABOOST for these boards
-    SX1276_SetTXDoneCallback(&onTxDone);
+    SX1276_SetCadDoneCallback(&onCadDone);
     lprintf(1, "Init done");
+    int lastCount = 0;
     while (1) {
-        __delay_ms(1000);
-        lprintf(0, "TX Count = %d ", txCount);
-        char msg[17];
-        sprintf(msg, "Hello World #%d", txCount);
-        SX1276_SendPacket((uint8_t *) msg, (uint8_t) (strlen(msg) + 1), false);
+        SX1276_ChannelActivityDetect(false);
+        while(lastCount == cadCount);
+        lastCount = cadCount;
+        lprintf(0, "CAD Count = %d ", cadCount);
+        __delay_ms(500);
     }
 }
 
@@ -54,7 +56,11 @@ void __interrupt(high_priority) HighISR(void) {
     }
 }
 
-void onTxDone(void) {
-    ++txCount;
+void onCadDone(bool result) {
+    if (result) {
+        ++cadCount;
+    } else {
+        SX1276_ChannelActivityDetect(false);  //Try again
+    }
 }
 
