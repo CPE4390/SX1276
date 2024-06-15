@@ -65,12 +65,9 @@
 #define IRQ_CAD_DONE_MASK          0x04
 #define IRQ_CAD_DETECTED_MASK      0x01
 
-#define RF_MID_BAND_THRESHOLD    525000000L
-#define RSSI_OFFSET_HF_PORT      157
-#define RSSI_OFFSET_LF_PORT      164
+#define RSSI_OFFSET_HF_PORT      -157
 
-//The packet length and fifo bases can be adjusted based on need
-#define MAX_PACKET_LENGTH           128
+//The packet length (in SX1276.h) and fifo bases can be adjusted based on need
 #define TX_FIFO_BASE    0x00
 #define RX_FIFO_BASE    0x80
 
@@ -84,8 +81,10 @@ enum {
 static uint32_t nominalFrequency;
 static bool crcEnabled;
 static enum _headerMode headerMode;
+static uint8_t expectedLength;
+static uint8_t *rxBuffer;
 static void (*onTxDone)(void);
-static void (*onRxDone)(void);
+static void (*onRxDone)(uint8_t);
 static void (*onCadDone)(bool);
 
 //private helper functions
@@ -281,8 +280,8 @@ void SX1276_SetLNAGain(uint8_t gain, bool boost) {
 
 void SX1276_SetPreambleLength(uint16_t len) {
     //Actual preamble length will be len + 4.25 symbols;
-    writeRegister(REG_PREAMBLE_MSB, (uint8_t)(len >> 8));
-    writeRegister(REG_PREAMBLE_LSB, (uint8_t)len);
+    writeRegister(REG_PREAMBLE_MSB, (uint8_t) (len >> 8));
+    writeRegister(REG_PREAMBLE_LSB, (uint8_t) len);
 }
 
 void SX1276_EnableCRC(bool enable) {
@@ -316,7 +315,7 @@ void SX1276_Sleep(void) {
 }
 
 bool SX1276_SendPacket(uint8_t *data, uint8_t len, bool block) {
-    if (len > MAX_PACKET_LENGTH) {
+    if (len > SX1276_MAX_PACKET_LENGTH) {
         return false;
     }
     if (SX1276_TXBusy()) {
@@ -326,6 +325,7 @@ bool SX1276_SendPacket(uint8_t *data, uint8_t len, bool block) {
     if (!block) {
         writeRegister(REG_DIO_MAPPING_1, DIO0_TXDONE);
     }
+    writeRegister(REG_PAYLOAD_LENGTH, len);
     writeFIFO(data, len);
     setOpMode(MODE_TX);
     if (block) {
@@ -336,9 +336,43 @@ bool SX1276_SendPacket(uint8_t *data, uint8_t len, bool block) {
 }
 
 //In implicit header mode len = packet length
-//In explicit header mode len = data buffer length = maximum packet that can be sent to buffer 
-int SX1276_ReceivePacket(uint8_t *data, int len, bool block) {
-    return true;
+//In explicit header mode len = data buffer length = maximum packet that can be sent to buffer
+//Return value is size of received packet or zero if packet is invalid
+uint8_t SX1276_ReceivePacket(uint8_t *data, uint8_t len, bool block) {
+    uint8_t rxLen = 0;
+    SX1276_Standby();
+    writeRegister(REG_FIFO_ADDR_PTR, RX_FIFO_BASE);
+    if (block) {
+        setOpMode(MODE_RX_CONTINUOUS);
+        uint8_t irqFlags;
+        do {
+            irqFlags = readRegister(REG_IRQ_FLAGS);
+        } while (!(irqFlags & IRQ_RX_DONE_MASK));
+        writeRegister(REG_IRQ_FLAGS, IRQ_RX_DONE_MASK); //Clear the IRQ
+        if (irqFlags & IRQ_PAYLOAD_CRC_ERROR_MASK) {
+            writeRegister(REG_IRQ_FLAGS, IRQ_PAYLOAD_CRC_ERROR_MASK); //Clear the IRQ
+            return 0; //packet is invalid
+        } else {
+            if (headerMode == IMPLICIT_HEADER) {
+                rxLen = len;
+            } else {
+                rxLen = readRegister(REG_RX_NB_BYTES);
+                if (rxLen > len) {
+                    //TODO how should this be handled?  Error or just read up to len bytes?
+                    rxLen = len;
+                }
+            }
+            writeRegister(REG_FIFO_ADDR_PTR, readRegister(REG_FIFO_RX_CURRENT_ADDR));
+            readFIFO(data, rxLen);
+        }
+    } else {
+        //non-blocking mode always returns zero. The callback will get the result
+        rxBuffer = data;
+        expectedLength = len;
+        writeRegister(REG_DIO_MAPPING_1, DIO0_RXDONE);
+        setOpMode(MODE_RX_CONTINUOUS);
+    }
+    return rxLen;
 }
 
 bool SX1276_ChannelActivityDetect(bool block) {
@@ -357,8 +391,8 @@ bool SX1276_ChannelActivityDetect(bool block) {
             return false;
         }
     } else {
-        //non-blocking mode always returns true. The callback will get the result
-        return true;
+        //non-blocking mode always returns false. The callback will get the result
+        return false;
     }
 }
 
@@ -370,19 +404,23 @@ bool SX1276_TXBusy(void) {
     }
 }
 
-float SX1276_RSSI(void) {
-    
+int SX1276_RSSI(void) {
+   int rssi = readRegister(REG_RSSI_VALUE);
+   return RSSI_OFFSET_HF_PORT + rssi;
 }
 
-float SX1276_PacketRSSI(void) {
-    
+int SX1276_PacketRSSI(void) {
+    int rssi = readRegister(REG_PKT_RSSI_VALUE);
+    return RSSI_OFFSET_HF_PORT + rssi;
 }
 
 float SX1276_PacketSNR(void) {
-    
+    int snr = readRegister(REG_PKT_SNR_VALUE);
+    return (float)(snr * 0.25);
 }
 
 void SX1276_HandleDIO0Int(void) {
+    //TODO should we only read REG_IRQ_FLAGS once?
     if (readRegister(REG_IRQ_FLAGS) & IRQ_TX_DONE_MASK) {
         writeRegister(REG_IRQ_FLAGS, IRQ_TX_DONE_MASK); //Clear the IRQ
         if (onTxDone) {
@@ -391,9 +429,25 @@ void SX1276_HandleDIO0Int(void) {
     }
     if (readRegister(REG_IRQ_FLAGS) & IRQ_RX_DONE_MASK) {
         writeRegister(REG_IRQ_FLAGS, IRQ_RX_DONE_MASK); //Clear the IRQ
-        //TODO handle rx
+        uint8_t rxLen = 0;
+        if (readRegister(REG_IRQ_FLAGS) & IRQ_PAYLOAD_CRC_ERROR_MASK) {
+            writeRegister(REG_IRQ_FLAGS, IRQ_PAYLOAD_CRC_ERROR_MASK);
+        } else {
+            //valid packet
+            if (headerMode == EXPLICIT_HEADER) {
+                rxLen = readRegister(REG_RX_NB_BYTES);
+                if (rxLen > expectedLength) {
+                    //TODO how should this be handled?  Error or just read up to len bytes?
+                    rxLen = expectedLength;
+                }
+            } else {
+                rxLen = expectedLength;
+            }
+            writeRegister(REG_FIFO_ADDR_PTR, readRegister(REG_FIFO_RX_CURRENT_ADDR));
+            readFIFO(rxBuffer, rxLen);
+        }
         if (onRxDone) {
-            onRxDone();
+            onRxDone(rxLen);
         }
     }
     if (readRegister(REG_IRQ_FLAGS) & IRQ_CAD_DONE_MASK) {
@@ -413,7 +467,7 @@ void SX1276_SetTXDoneCallback(void (*callback)(void)) {
     onTxDone = callback;
 }
 
-void SX1276_SetRXDoneCallback(void (*callback)(void)) {
+void SX1276_SetRXDoneCallback(void (*callback)(uint8_t)) {
     onRxDone = callback;
 }
 

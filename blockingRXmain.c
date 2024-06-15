@@ -26,20 +26,13 @@ void main(void) {
     SX1276_SetFrequency(915000000);
     SX1276_SetSignalBandwidth(BW125K);
     SX1276_SetSpreadingFactor(7);
-    SX1276_SetCodingRate(5);
-    
+    SX1276_SetLNAGain(0, true);
     lprintf(1, "Init done");
-    int txCount = 0;
     while (1) {
-        __delay_ms(1000);
-        char msg[17];
-        sprintf(msg, "Hello World #%d", txCount);
-        bool success = SX1276_SendPacket((uint8_t *)msg, (uint8_t)(strlen(msg) + 1), true);
-        if (success) {
-            ++txCount;
-            lprintf(0, "TX Count = %d ", txCount);
-        } else {
-            lprintf(0, "%d", success);
+        uint8_t rxBuffer[SX1276_MAX_PACKET_LENGTH];
+        if (SX1276_ReceivePacket(rxBuffer, SX1276_MAX_PACKET_LENGTH, true)) {
+            lprintf(0, "%s", rxBuffer);
+            lprintf(1, "%d, %.2f", SX1276_PacketRSSI(), SX1276_PacketSNR());
         }
     }
 }

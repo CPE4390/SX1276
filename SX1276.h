@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define SX1276_MAX_PACKET_LENGTH           128
+
 enum SX1276_BANDWIDTH {BW7_8K = 0, BW10_4K = 1, BW15_6K = 2, BW20_8K = 3,
 BW31_2K = 4, BW41_7K = 5, BW62_5K = 6, BW125K = 7, BW250K = 8, BW500K = 9};
 
@@ -29,15 +31,15 @@ void SX1276_SetHeaderMode(enum _headerMode mode);
 void SX1276_Standby(void);
 void SX1276_Sleep(void);
 bool SX1276_SendPacket(uint8_t *data, uint8_t len, bool block);
-int SX1276_ReceivePacket(uint8_t *data, int len, bool block);
+uint8_t SX1276_ReceivePacket(uint8_t *data, uint8_t len, bool block);
 bool SX1276_ChannelActivityDetect(bool block);
 bool SX1276_TXBusy(void);
-float SX1276_RSSI(void);
-float SX1276_PacketRSSI(void);
+int SX1276_RSSI(void);
+int SX1276_PacketRSSI(void);
 float SX1276_PacketSNR(void);
 void SX1276_HandleDIO0Int(void);
 void SX1276_SetTXDoneCallback(void (*callback)(void));
-void SX1276_SetRXDoneCallback(void (*callback)(void));
+void SX1276_SetRXDoneCallback(void (*callback)(uint8_t));
 void SX1276_SetCadDoneCallback(void (*callback)(bool));
 
 #endif	/* SX1276_H */
