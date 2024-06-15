@@ -22,7 +22,7 @@ void main(void) {
     if (!SX1276_Init()) {
         lprintf(1, "SX1276 Not Found");
         while (1);
-    };
+    }
     SX1276_SetFrequency(915000000);
     SX1276_SetSignalBandwidth(BW125K);
     SX1276_SetSpreadingFactor(7);

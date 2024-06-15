@@ -28,7 +28,7 @@ void main(void) {
     if (!SX1276_Init()) {
         lprintf(1, "SX1276 Not Found");
         while (1);
-    };
+    }
     INTCON2bits.INTEDG1 = 1; //Rising edge
     INTCON3bits.INT1IE = 1;
     INTCON3bits.INT1IF = 0;

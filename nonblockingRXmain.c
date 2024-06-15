@@ -14,9 +14,11 @@
 //VCC -> 3.3V
 //GND -> GND
 
-volatile int txCount = 0;
+void onRxDone(uint8_t len);
 
-void onTxDone(void);
+volatile bool newPacket;
+volatile uint8_t rxBuffer[SX1276_MAX_PACKET_LENGTH];
+volatile uint8_t packetLength;
 
 void main(void) {
     OSCTUNEbits.PLLEN = 1;
@@ -34,16 +36,15 @@ void main(void) {
     SX1276_SetFrequency(915000000);
     SX1276_SetSignalBandwidth(BW125K);
     SX1276_SetSpreadingFactor(7);
-    SX1276_SetCodingRate(5);
-    SX1276_SetTransmitPower(14, PA_PABOOST_OUTPUT);  //must use PABOOST for these boards
-    SX1276_SetTXDoneCallback(&onTxDone);
+    SX1276_SetRXDoneCallback(&onRxDone);
     lprintf(1, "Init done");
+    newPacket = false;
+    SX1276_ReceivePacket((uint8_t *)rxBuffer, SX1276_MAX_PACKET_LENGTH, false);
     while (1) {
-        __delay_ms(1000);
-        lprintf(0, "TX Count = %d ", txCount);
-        char msg[17];
-        sprintf(msg, "Hello World #%d", txCount);
-        SX1276_SendPacket((uint8_t *) msg, (uint8_t) (strlen(msg) + 1), false);
+        if (newPacket) {
+            newPacket = false;
+            lprintf(0, "%s", rxBuffer);
+        }
     }
 }
 
@@ -54,7 +55,9 @@ void __interrupt(high_priority) HighISR(void) {
     }
 }
 
-void onTxDone(void) {
-    ++txCount;
+void onRxDone(uint8_t len) {
+    if (len) {
+        newPacket = true;
+    }
 }
 
