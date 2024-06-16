@@ -18,8 +18,6 @@ volatile int cadCount = 0;
 
 void onCadDone(bool result);
 
-//TODO have this switch to rx when channel activity detected
-
 void main(void) {
     OSCTUNEbits.PLLEN = 1;
     LCDInit();

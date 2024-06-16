@@ -79,7 +79,6 @@ enum {
 
 //private variables
 static uint32_t nominalFrequency;
-static bool crcEnabled;
 static enum _headerMode headerMode;
 static uint8_t expectedLength;
 static uint8_t *rxBuffer;
@@ -116,7 +115,6 @@ bool SX1276_Init(void) {
     //set 915 MHz as default
     SX1276_SetFrequency(915000000);
     headerMode = EXPLICIT_HEADER;
-    crcEnabled = false;
     onTxDone = NULL;
     onRxDone = NULL;
     onCadDone = NULL;
@@ -319,7 +317,6 @@ bool SX1276_SendPacket(uint8_t *data, uint8_t len, bool block) {
 //In implicit header mode len = packet length
 //In explicit header mode len = data buffer length = maximum packet that can be sent to buffer
 //Return value is size of received packet or zero if packet is invalid
-
 uint8_t SX1276_ReceivePacket(uint8_t *data, uint8_t len, bool block) {
     uint8_t rxLen = 0;
     SX1276_Standby();
@@ -333,9 +330,8 @@ uint8_t SX1276_ReceivePacket(uint8_t *data, uint8_t len, bool block) {
         do {
             irqFlags = readRegister(REG_IRQ_FLAGS);
         } while (!(irqFlags & IRQ_RX_DONE_MASK));
-        writeRegister(REG_IRQ_FLAGS, IRQ_RX_DONE_MASK); //Clear the IRQ
+        writeRegister(REG_IRQ_FLAGS, irqFlags); //Clear the IRQs
         if (irqFlags & IRQ_PAYLOAD_CRC_ERROR_MASK) {
-            writeRegister(REG_IRQ_FLAGS, IRQ_PAYLOAD_CRC_ERROR_MASK); //Clear the IRQ
             return 0; //packet is invalid
         } else {
             if (headerMode == IMPLICIT_HEADER) {
@@ -366,10 +362,12 @@ bool SX1276_ChannelActivityDetect(bool block) {
     }
     setOpMode(MODE_CAD);
     if (block) {
-        while (!(readRegister(REG_IRQ_FLAGS) & IRQ_CAD_DONE_MASK));
-        writeRegister(REG_IRQ_FLAGS, IRQ_CAD_DONE_MASK); //Clear the IRQ
-        if (readRegister(REG_IRQ_FLAGS) & IRQ_CAD_DETECTED_MASK) {
-            writeRegister(REG_IRQ_FLAGS, IRQ_CAD_DETECTED_MASK); //Clear the IRQ
+        uint8_t irqFlags;
+        do {
+            readRegister(REG_IRQ_FLAGS);
+        } while (!(irqFlags & IRQ_CAD_DONE_MASK));
+        writeRegister(REG_IRQ_FLAGS, irqFlags); //Clear the IRQ flags
+        if (irqFlags & IRQ_CAD_DETECTED_MASK) {
             return true;
         } else {
             return false;
@@ -404,19 +402,17 @@ float SX1276_PacketSNR(void) {
 }
 
 void SX1276_HandleDIO0Int(void) {
-    //TODO should we only read REG_IRQ_FLAGS once?
-    if (readRegister(REG_IRQ_FLAGS) & IRQ_TX_DONE_MASK) {
-        writeRegister(REG_IRQ_FLAGS, IRQ_TX_DONE_MASK); //Clear the IRQ
+    uint8_t irqFlags;
+    irqFlags = readRegister(REG_IRQ_FLAGS);
+    writeRegister(REG_IRQ_FLAGS, irqFlags); //clear the flags
+    if (irqFlags & IRQ_TX_DONE_MASK) {
         if (onTxDone) {
             onTxDone();
         }
     }
-    if (readRegister(REG_IRQ_FLAGS) & IRQ_RX_DONE_MASK) {
-        writeRegister(REG_IRQ_FLAGS, IRQ_RX_DONE_MASK); //Clear the IRQ
+    if (irqFlags & IRQ_RX_DONE_MASK) {
         uint8_t rxLen = 0;
-        if (readRegister(REG_IRQ_FLAGS) & IRQ_PAYLOAD_CRC_ERROR_MASK) {
-            writeRegister(REG_IRQ_FLAGS, IRQ_PAYLOAD_CRC_ERROR_MASK);
-        } else {
+        if (!(irqFlags & IRQ_PAYLOAD_CRC_ERROR_MASK)) {
             //valid packet
             if (headerMode == EXPLICIT_HEADER) {
                 rxLen = readRegister(REG_RX_NB_BYTES);
@@ -433,11 +429,9 @@ void SX1276_HandleDIO0Int(void) {
             onRxDone(rxLen);
         }
     }
-    if (readRegister(REG_IRQ_FLAGS) & IRQ_CAD_DONE_MASK) {
-        writeRegister(REG_IRQ_FLAGS, IRQ_CAD_DONE_MASK); //Clear the IRQ
+    if (irqFlags & IRQ_CAD_DONE_MASK) {
         bool result = false;
-        if (readRegister(REG_IRQ_FLAGS) & IRQ_CAD_DETECTED_MASK) {
-            writeRegister(REG_IRQ_FLAGS, IRQ_CAD_DETECTED_MASK); //Clear the IRQ
+        if (irqFlags & IRQ_CAD_DETECTED_MASK) {
             result = true;
         }
         if (onCadDone) {
@@ -461,7 +455,7 @@ void SX1276_SetCadDoneCallback(void (*callback)(bool)) {
 void SX1276_OptimizeRxPerErrata(void) {
     /* This function implements the settings to prevent spurious receptions
      as described in 2.3 of the errata document.
-     It should be called after the frequency/channel or bandwidth 
+     It should be called after the frequency (or channel) or bandwidth 
      are set (or changed.)  It should only be used by a receiver node*/
     SX1276_Standby();
     uint32_t bwHz = getBandwidthHz();
@@ -509,7 +503,6 @@ void initSPI(void) {
 }
 
 uint8_t spiTransfer(uint8_t byte) {
-    uint8_t b;
     SSP2BUF = byte; //transmit byte
     while (!PIR3bits.SSP2IF); //Wait until completed
     PIR3bits.SSP2IF = 0; //Clear flag so it is ready for next transfer
@@ -592,7 +585,7 @@ uint32_t getBandwidthHz(void) {
         case BW62_5K: return 62500;
         case BW125K: return 125000;
         case BW250K: return 250000;
-        case BW500K:
-        default: return 500000;
+        case BW500K: return 500000;
+        default: return 125000;
     }
 }
