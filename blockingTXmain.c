@@ -23,17 +23,20 @@ void main(void) {
         lprintf(1, "SX1276 Not Found");
         while (1);
     }
-    SX1276_SetFrequency(915000000);
+    //SX1276_SetFrequency(915000000);
+    SX1276_SetChannel(13);
     SX1276_SetSignalBandwidth(BW125K);
     SX1276_SetSpreadingFactor(7);
     SX1276_SetCodingRate(5);
     SX1276_SetTransmitPower(14, PA_PABOOST_OUTPUT); //must use PABOOST for these boards
+    SX1276_SetHeaderMode(EXPLICIT_HEADER);
+    SX1276_EnableCRC(true);
     lprintf(1, "Init done");
     int txCount = 0;
     while (1) {
         __delay_ms(1000);
-        char msg[17];
-        sprintf(msg, "Hello World #%d", txCount);
+        char msg[20];
+        snprintf(msg, 20, "Hello World #%d", txCount + 1);
         bool success = SX1276_SendPacket((uint8_t *)msg, (uint8_t)(strlen(msg) + 1), true);
         if (success) {
             ++txCount;

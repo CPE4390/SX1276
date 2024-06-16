@@ -23,10 +23,15 @@ void main(void) {
         lprintf(1, "SX1276 Not Found");
         while (1);
     }
-    SX1276_SetFrequency(915000000);
+    //SX1276_SetFrequency(915000000);
+    SX1276_SetChannel(13);
     SX1276_SetSignalBandwidth(BW125K);
     SX1276_SetSpreadingFactor(7);
+    SX1276_SetCodingRate(5);
     SX1276_SetLNAGain(0, true);
+    SX1276_SetHeaderMode(EXPLICIT_HEADER);
+    SX1276_EnableCRC(true);
+    SX1276_OptimizeRxPerErrata();
     lprintf(1, "Init done");
     while (1) {
         uint8_t rxBuffer[SX1276_MAX_PACKET_LENGTH];

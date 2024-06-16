@@ -113,6 +113,7 @@ bool SX1276_Init(void) {
     }
     writeRegister(REG_FIFO_TX_BASE_ADDR, TX_FIFO_BASE);
     writeRegister(REG_FIFO_RX_BASE_ADDR, RX_FIFO_BASE);
+    //set 915 MHz as default
     SX1276_SetFrequency(915000000);
     headerMode = EXPLICIT_HEADER;
     crcEnabled = false;
@@ -127,10 +128,6 @@ void SX1276_SetFrequency(uint32_t frequency) {
         return;
     }
     nominalFrequency = frequency;
-    uint32_t bw = getBandwidthHz();
-    if (bw <= 41670) {
-        frequency += bw;
-    }
     uint32_t frf = (uint32_t) ((((uint64_t) frequency) << 19) / 32000000);
     writeRegister(REG_FRF_MSB, (uint8_t) (frf >> 16));
     writeRegister(REG_FRF_MID, (uint8_t) (frf >> 8));
@@ -150,17 +147,18 @@ void SX1276_SetSpreadingFactor(uint8_t sf) {
     if (sf < 6 || sf > 12) {
         return;
     }
-    uint32_t bw = getBandwidthHz();
+    uint8_t reg = readRegister(REG_DETECTION_OPTIMIZE);
+    reg &= 0b11111000; //clear DetectionOptimize bits
     if (sf == 6) {
         SX1276_SetHeaderMode(IMPLICIT_HEADER);
-        writeRegister(REG_DETECTION_OPTIMIZE, bw == 500000 ? 0xc5 : 0x45);
+        reg |= 0x05;
         writeRegister(REG_DETECTION_THRESHOLD, 0x0c);
     } else {
-        //SX1276_SetHeaderMode(EXPLICIT_HEADER);
-        writeRegister(REG_DETECTION_OPTIMIZE, bw == 500000 ? 0xc3 : 0x43);
+        reg |= 0x03;
         writeRegister(REG_DETECTION_THRESHOLD, 0x0a);
     }
-    uint8_t reg = readRegister(REG_MODEM_CONFIG_2);
+    writeRegister(REG_DETECTION_OPTIMIZE, reg);
+    reg = readRegister(REG_MODEM_CONFIG_2);
     reg &= 0x0f;
     reg |= sf << 4;
     writeRegister(REG_MODEM_CONFIG_2, reg);
@@ -185,36 +183,17 @@ void SX1276_SetSignalBandwidth(enum SX1276_BANDWIDTH bw) {
     reg &= 0x0f;
     reg |= bw << 4;
     writeRegister(REG_MODEM_CONFIG_1, reg);
+    reg = readRegister(REG_DETECTION_OPTIMIZE);
+    reg &= 0b01111111; //clear AutomaticIFOn bit
+    if (bw == BW500K) {
+        reg |= 0x80;
+        writeRegister(0x36, 0x02); //See errata 2.1
+        writeRegister(0x3a, 0x64); //See errata 2.2
+    } else {
+        writeRegister(0x36, 0x03);
+    }
+    writeRegister(REG_DETECTION_OPTIMIZE, reg);
     setLDO();
-    //Optimize detection - see errata
-    uint32_t bwHz = getBandwidthHz();
-    uint32_t frequency = nominalFrequency;
-    if (bwHz <= 41670) {
-        frequency += bwHz;
-    }
-    uint32_t frf = (uint32_t) ((((uint64_t) frequency) << 19) / 32000000);
-    writeRegister(REG_FRF_MSB, (uint8_t) (frf >> 16));
-    writeRegister(REG_FRF_MID, (uint8_t) (frf >> 8));
-    writeRegister(REG_FRF_LSB, (uint8_t) frf);
-    uint8_t IfFreq2;
-    switch (bw) {
-        case BW7_8K: IfFreq2 = 0x48;
-            break;
-        case BW10_4K:
-        case BW15_6K:
-        case BW20_8K:
-        case BW31_2K:
-        case BW41_7K: IfFreq2 = 0x44;
-            break;
-        case BW62_5K:
-        case BW125K:
-        case BW250K: IfFreq2 = 0x40;
-            break;
-        default: IfFreq2 = 0x20;
-            break;
-    }
-    writeRegister(0x2f, IfFreq2);
-    writeRegister(0x30, 0x00);
 }
 
 void SX1276_SetTransmitPower(uint8_t db, enum SX1276_PA_PIN pin) {
@@ -231,11 +210,11 @@ void SX1276_SetTransmitPower(uint8_t db, enum SX1276_PA_PIN pin) {
             db = 2;
         }
         if (db <= 17) {
-            SX1276_SetOCP(100); //TODO check the ocp settings
+            SX1276_SetOCP(100);
             writeRegister(REG_PA_DAC, 0x84);
             writeRegister(REG_PA_CONFIG, PA_BOOST | (db - 2));
         } else { //db > 17 set power at 20db
-            SX1276_SetOCP(140); //TODO check ocp setting
+            SX1276_SetOCP(140);
             writeRegister(REG_PA_DAC, 0x87);
             writeRegister(REG_PA_CONFIG, PA_BOOST | 15);
         }
@@ -280,12 +259,14 @@ void SX1276_SetLNAGain(uint8_t gain, bool boost) {
 
 void SX1276_SetPreambleLength(uint16_t len) {
     //Actual preamble length will be len + 4.25 symbols;
+    if (len < 6) {
+        len = 6; //minimum length = 6 + 4 = 10
+    }
     writeRegister(REG_PREAMBLE_MSB, (uint8_t) (len >> 8));
     writeRegister(REG_PREAMBLE_LSB, (uint8_t) len);
 }
 
 void SX1276_EnableCRC(bool enable) {
-    //TODO test this
     uint8_t reg = readRegister(REG_MODEM_CONFIG_2);
     if (enable) {
         reg |= 0x04;
@@ -338,10 +319,14 @@ bool SX1276_SendPacket(uint8_t *data, uint8_t len, bool block) {
 //In implicit header mode len = packet length
 //In explicit header mode len = data buffer length = maximum packet that can be sent to buffer
 //Return value is size of received packet or zero if packet is invalid
+
 uint8_t SX1276_ReceivePacket(uint8_t *data, uint8_t len, bool block) {
     uint8_t rxLen = 0;
     SX1276_Standby();
     writeRegister(REG_FIFO_ADDR_PTR, RX_FIFO_BASE);
+    if (headerMode == IMPLICIT_HEADER) {
+        writeRegister(REG_PAYLOAD_LENGTH, len);
+    }
     if (block) {
         setOpMode(MODE_RX_CONTINUOUS);
         uint8_t irqFlags;
@@ -358,7 +343,6 @@ uint8_t SX1276_ReceivePacket(uint8_t *data, uint8_t len, bool block) {
             } else {
                 rxLen = readRegister(REG_RX_NB_BYTES);
                 if (rxLen > len) {
-                    //TODO how should this be handled?  Error or just read up to len bytes?
                     rxLen = len;
                 }
             }
@@ -405,8 +389,8 @@ bool SX1276_TXBusy(void) {
 }
 
 int SX1276_RSSI(void) {
-   int rssi = readRegister(REG_RSSI_VALUE);
-   return RSSI_OFFSET_HF_PORT + rssi;
+    int rssi = readRegister(REG_RSSI_VALUE);
+    return RSSI_OFFSET_HF_PORT + rssi;
 }
 
 int SX1276_PacketRSSI(void) {
@@ -416,7 +400,7 @@ int SX1276_PacketRSSI(void) {
 
 float SX1276_PacketSNR(void) {
     int snr = readRegister(REG_PKT_SNR_VALUE);
-    return (float)(snr * 0.25);
+    return (float) (snr * 0.25);
 }
 
 void SX1276_HandleDIO0Int(void) {
@@ -437,7 +421,6 @@ void SX1276_HandleDIO0Int(void) {
             if (headerMode == EXPLICIT_HEADER) {
                 rxLen = readRegister(REG_RX_NB_BYTES);
                 if (rxLen > expectedLength) {
-                    //TODO how should this be handled?  Error or just read up to len bytes?
                     rxLen = expectedLength;
                 }
             } else {
@@ -473,6 +456,44 @@ void SX1276_SetRXDoneCallback(void (*callback)(uint8_t)) {
 
 void SX1276_SetCadDoneCallback(void (*callback)(bool)) {
     onCadDone = callback;
+}
+
+void SX1276_OptimizeRxPerErrata(void) {
+    /* This function implements the settings to prevent spurious receptions
+     as described in 2.3 of the errata document.
+     It should be called after the frequency/channel or bandwidth 
+     are set (or changed.)  It should only be used by a receiver node*/
+    SX1276_Standby();
+    uint32_t bwHz = getBandwidthHz();
+    uint32_t frequency = nominalFrequency;
+    if (bwHz <= 41670) {
+        frequency += bwHz;
+    }
+    uint32_t frf = (uint32_t) ((((uint64_t) frequency) << 19) / 32000000);
+    writeRegister(REG_FRF_MSB, (uint8_t) (frf >> 16));
+    writeRegister(REG_FRF_MID, (uint8_t) (frf >> 8));
+    writeRegister(REG_FRF_LSB, (uint8_t) frf);
+    uint8_t IfFreq2;
+    uint8_t bw = readRegister(REG_MODEM_CONFIG_1);
+    bw >>= 4;
+    switch (bw) {
+        case BW7_8K: IfFreq2 = 0x48;
+            break;
+        case BW10_4K:
+        case BW15_6K:
+        case BW20_8K:
+        case BW31_2K:
+        case BW41_7K: IfFreq2 = 0x44;
+            break;
+        case BW62_5K:
+        case BW125K:
+        case BW250K: IfFreq2 = 0x40;
+            break;
+        default: IfFreq2 = 0x20;
+            break;
+    }
+    writeRegister(0x2f, IfFreq2);
+    writeRegister(0x30, 0x00);
 }
 
 void initSPI(void) {

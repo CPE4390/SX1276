@@ -42,5 +42,7 @@ void SX1276_SetTXDoneCallback(void (*callback)(void));
 void SX1276_SetRXDoneCallback(void (*callback)(uint8_t));
 void SX1276_SetCadDoneCallback(void (*callback)(bool));
 
+void SX1276_OptimizeRxPerErrata(void);  //See notes in .c file
+
 #endif	/* SX1276_H */
 
